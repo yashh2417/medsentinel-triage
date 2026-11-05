@@ -1,0 +1,8 @@
+.env
+.venv
+models/
+DS_store
+__pycache__/
+clinical_data_cache/
+.DS_Store
+.python-version
