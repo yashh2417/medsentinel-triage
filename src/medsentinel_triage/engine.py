@@ -1,4 +1,4 @@
-"""Central inference orchestrator and CLI entry point for the Healthcare AI Clinical Triage platform."""
+"""Central inference orchestrator and CLI entry point for the MedSentinel Clinical Triage platform."""
 
 from __future__ import annotations
 
@@ -12,12 +12,14 @@ import argparse
 import json
 import logging
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Sequence, Union
 
-from a_project.base import InputValidationError
-from a_project.config import InferenceConfig, configure_logging
-from a_project.loader import LoadedModelBundle, ModelLoader
-from a_project.preprocessing import (
+import pandas as pd
+
+from medsentinel_triage.base import InputValidationError
+from medsentinel_triage.config import InferenceConfig, configure_logging
+from medsentinel_triage.loader import LoadedModelBundle, ModelLoader
+from medsentinel_triage.preprocessing import (
     TabularInputType,
     VitalsInputType,
     XRayInputType,
@@ -26,16 +28,16 @@ from a_project.preprocessing import (
     validate_non_empty_text,
     validate_xray_image,
 )
-from a_project.workflow import (
+from medsentinel_triage.workflow import (
     TriageAgentState,
     build_langgraph_triage_workflow,
 )
 
-logger = logging.getLogger("a_project.engine")
+logger = logging.getLogger("medsentinel_triage.engine")
 
 
 class ClinicalTriageInferenceEngine:
-    """Central inference orchestrator unifying individual model predictions and LangGraph execution."""
+    """Central inference orchestrator unifying individual model predictions, batch inference, and LangGraph execution."""
 
     def __init__(
         self,
@@ -69,7 +71,7 @@ class ClinicalTriageInferenceEngine:
         interrupt_before_hitl: bool = True,
         force_reindex_rag: bool = False,
     ) -> "ClinicalTriageInferenceEngine":
-        """Loads all pre-trained models from disk and constructs the central inference engine."""
+        """Loads all pre-trained models from `trained_models/` and constructs the central inference engine."""
         loader = ModelLoader(config=config)
         bundle = loader.load_all(
             corpus=corpus,
@@ -200,17 +202,62 @@ class ClinicalTriageInferenceEngine:
             state = self.approve_hitl(thread_id=thread_id)
         return state
 
+    def run_batch_triage(
+        self,
+        patient_payloads: Union[Sequence[Dict[str, Any]], str, Path],
+        auto_approve_hitl: bool = True,
+        output_path: Optional[Union[str, Path]] = None,
+    ) -> List[TriageAgentState]:
+        """Runs multimodal clinical triage across a batch of patient records (list or `.json`/`.jsonl`/`.csv` file)."""
+        records = (
+            load_batch_patient_payloads(patient_payloads)
+            if isinstance(patient_payloads, (str, Path))
+            else [validate_patient_payload_dict(p, idx=i) for i, p in enumerate(patient_payloads)]
+        )
+        results: List[TriageAgentState] = []
+        for idx, payload in enumerate(records):
+            pid = str(payload["patient_id"])
+            thread_id = f"batch-triage-{pid}-{idx}"
+            logger.info("Running batch triage [%d/%d] for patient_id=%s", idx + 1, len(records), pid)
+            state = self.run_full_triage(
+                patient_id=pid,
+                tabular_input=payload["tabular_input"],
+                vitals_24h=payload["vitals_24h"],
+                xray_28x28=payload["xray_28x28"],
+                clinical_note=payload["clinical_note"],
+                thread_id=thread_id,
+                auto_approve_hitl=auto_approve_hitl,
+            )
+            results.append(state)
+
+        if output_path is not None:
+            out_file = Path(output_path)
+            out_file.parent.mkdir(parents=True, exist_ok=True)
+            if out_file.suffix.lower() == ".jsonl":
+                with out_file.open("w", encoding="utf-8") as f:
+                    for state in results:
+                        f.write(json.dumps(state) + "\n")
+            else:
+                with out_file.open("w", encoding="utf-8") as f:
+                    json.dump(results, f, indent=2)
+            logger.info("Saved %d batch triage results to %s", len(results), out_file)
+
+        return results
+
+
+def validate_patient_payload_dict(payload: Any, idx: Optional[int] = None) -> Dict[str, Any]:
+    """Validates that a patient payload dict contains all required multimodal keys."""
+    required_keys = {"patient_id", "tabular_input", "vitals_24h", "xray_28x28", "clinical_note"}
+    prefix = f"Patient payload at index {idx}" if idx is not None else "Patient JSON payload"
+    if not isinstance(payload, dict) or not required_keys.issubset(payload.keys()):
+        raise InputValidationError(
+            f"{prefix} must contain keys {sorted(required_keys)}."
+        )
+    return payload
+
 
 def load_patient_payload(input_json_path: Union[str, Path]) -> Dict[str, Any]:
-    """Loads and validates a patient multimodal payload from a JSON file.
-
-    Expected keys in JSON file:
-    - `patient_id` (str)
-    - `tabular_input` (dict of patient tabular features)
-    - `vitals_24h` (24x5 list of floats)
-    - `xray_28x28` (28x28 list of uint8 ints)
-    - `clinical_note` (str)
-    """
+    """Loads and validates a single patient multimodal payload from a JSON file."""
     path = Path(input_json_path)
     if not path.exists():
         raise InputValidationError(f"Patient input JSON file not found at: {path}")
@@ -218,12 +265,44 @@ def load_patient_payload(input_json_path: Union[str, Path]) -> Dict[str, Any]:
     with path.open("r", encoding="utf-8") as f:
         payload = json.load(f)
 
-    required_keys = {"patient_id", "tabular_input", "vitals_24h", "xray_28x28", "clinical_note"}
-    if not isinstance(payload, dict) or not required_keys.issubset(payload.keys()):
+    return validate_patient_payload_dict(payload)
+
+
+def load_batch_patient_payloads(batch_path: Union[str, Path]) -> List[Dict[str, Any]]:
+    """Loads a batch of patient multimodal payloads from a `.json` (list or single object), `.jsonl`, or `.csv` file.
+
+    For `.csv` files, JSON-encoded columns (`tabular_input`, `vitals_24h`, `xray_28x28`) are parsed automatically.
+    """
+    path = Path(batch_path)
+    if not path.exists():
+        raise InputValidationError(f"Batch patient input file not found at: {path}")
+
+    suffix = path.suffix.lower()
+    raw_records: List[Dict[str, Any]] = []
+    if suffix == ".json":
+        with path.open("r", encoding="utf-8") as f:
+            data = json.load(f)
+        raw_records = data if isinstance(data, list) else [data]
+    elif suffix == ".jsonl":
+        with path.open("r", encoding="utf-8") as f:
+            raw_records = [json.loads(line) for line in f if line.strip()]
+    elif suffix == ".csv":
+        df = pd.read_csv(path)
+        for _, row in df.iterrows():
+            rec = row.to_dict()
+            for json_col in ("tabular_input", "vitals_24h", "xray_28x28"):
+                if json_col in rec and isinstance(rec[json_col], str):
+                    rec[json_col] = json.loads(rec[json_col])
+            raw_records.append(rec)
+    else:
         raise InputValidationError(
-            f"Patient JSON payload must contain keys {sorted(required_keys)}."
+            f"Unsupported batch input format '{suffix}'. Expected .json, .jsonl, or .csv."
         )
-    return payload
+
+    if not raw_records:
+        raise InputValidationError(f"Batch patient input file {path} contains no records.")
+
+    return [validate_patient_payload_dict(rec, idx=i) for i, rec in enumerate(raw_records)]
 
 
 def format_triage_summary(paused_state: TriageAgentState, final_state: Optional[TriageAgentState] = None) -> str:
@@ -260,15 +339,26 @@ def format_triage_summary(paused_state: TriageAgentState, final_state: Optional[
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    """CLI entry point to run multimodal clinical triage inference on user-supplied data."""
+    """CLI entry point to run single-patient or batch multimodal clinical triage inference."""
     parser = argparse.ArgumentParser(
-        description="Run the Healthcare AI Multimodal Clinical Triage Inference Engine."
+        description="Run the MedSentinel Multimodal Clinical Triage Inference Engine."
     )
-    parser.add_argument(
+    input_group = parser.add_mutually_exclusive_group(required=True)
+    input_group.add_argument(
         "--input-json",
         type=str,
-        required=True,
-        help="Path to patient multimodal input JSON file (`patient_id`, `tabular_input`, `vitals_24h`, `xray_28x28`, `clinical_note`).",
+        help="Path to a single patient multimodal input JSON file.",
+    )
+    input_group.add_argument(
+        "--batch-input",
+        type=str,
+        help="Path to a batch file (.json, .jsonl, or .csv) containing multiple patient payloads.",
+    )
+    parser.add_argument(
+        "--output-file",
+        type=str,
+        default=None,
+        help="Optional path to save output predictions (.json or .jsonl).",
     )
     parser.add_argument(
         "--rag-corpus-file",
@@ -280,7 +370,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         "--models-dir",
         type=str,
         default=None,
-        help="Path to directory containing saved model checkpoints (defaults to ./models).",
+        help="Path to directory containing saved model checkpoints (defaults to ./trained_models).",
     )
     parser.add_argument(
         "--device",
@@ -297,7 +387,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Output the final TriageAgentState as formatted JSON.",
+        help="Output the final TriageAgentState(s) as formatted JSON to stdout.",
     )
     args = parser.parse_args(argv)
 
@@ -315,22 +405,40 @@ def main(argv: Optional[List[str]] = None) -> None:
         force_reindex_rag=args.reindex_rag,
     )
 
-    patient_payload = load_patient_payload(args.input_json)
-    thread_id = f"clinical-triage-{patient_payload['patient_id']}"
-    paused_state = engine.run_triage_until_hitl(
-        patient_id=patient_payload["patient_id"],
-        tabular_input=patient_payload["tabular_input"],
-        vitals_24h=patient_payload["vitals_24h"],
-        xray_28x28=patient_payload["xray_28x28"],
-        clinical_note=patient_payload["clinical_note"],
-        thread_id=thread_id,
-    )
-    final_state = engine.approve_hitl(thread_id=thread_id)
-
-    if args.json:
-        print(json.dumps(final_state, indent=2))
+    if args.batch_input:
+        batch_states = engine.run_batch_triage(
+            patient_payloads=args.batch_input,
+            auto_approve_hitl=True,
+            output_path=args.output_file,
+        )
+        if args.json:
+            print(json.dumps(batch_states, indent=2))
+        else:
+            for state in batch_states:
+                print(format_triage_summary(state, state))
     else:
-        print(format_triage_summary(paused_state, final_state))
+        patient_payload = load_patient_payload(args.input_json)
+        thread_id = f"clinical-triage-{patient_payload['patient_id']}"
+        paused_state = engine.run_triage_until_hitl(
+            patient_id=patient_payload["patient_id"],
+            tabular_input=patient_payload["tabular_input"],
+            vitals_24h=patient_payload["vitals_24h"],
+            xray_28x28=patient_payload["xray_28x28"],
+            clinical_note=patient_payload["clinical_note"],
+            thread_id=thread_id,
+        )
+        final_state = engine.approve_hitl(thread_id=thread_id)
+
+        if args.output_file:
+            out_path = Path(args.output_file)
+            out_path.parent.mkdir(parents=True, exist_ok=True)
+            with out_path.open("w", encoding="utf-8") as f:
+                json.dump(final_state, f, indent=2)
+
+        if args.json:
+            print(json.dumps(final_state, indent=2))
+        else:
+            print(format_triage_summary(paused_state, final_state))
 
 
 if __name__ == "__main__":

@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional, Union
 
 import joblib
 import numpy as np
-from langchain.retrievers import EnsembleRetriever
+from langchain_classic.retrievers import EnsembleRetriever
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.retrievers import BM25Retriever
 from langchain_community.vectorstores import Chroma
@@ -16,8 +16,8 @@ from langchain_core.documents import Document
 from langchain_core.runnables import RunnableLambda, RunnableSequence
 from sentence_transformers import CrossEncoder
 
-from a_project.base import BaseInferenceModel, InputValidationError
-from a_project.preprocessing import validate_non_empty_text
+from medsentinel_triage.base import BaseInferenceModel, InputValidationError
+from medsentinel_triage.preprocessing import validate_non_empty_text
 
 
 def tokenize_clinical_text(text: str) -> List[str]:

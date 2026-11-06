@@ -12,8 +12,8 @@ from pandas.api.types import is_numeric_dtype
 import torch
 import torch.nn.functional as F
 
-from a_project.base import InputValidationError
-from a_project.config import (
+from medsentinel_triage.base import InputValidationError
+from medsentinel_triage.config import (
     DEFAULT_ICU_VITALS,
     ICU_NUM_VITAL_CHANNELS,
     ICU_SEQUENCE_LENGTH,

@@ -1,10 +1,21 @@
-"""Modular, production-ready inference package for the Healthcare AI Clinical Triage platform."""
+"""Modular, production-ready inference package for the MedSentinel Clinical Triage platform."""
 
-from a_project.base import BaseInferenceModel, InferenceError, InputValidationError, ModelLoadError
-from a_project.config import InferenceConfig, configure_logging, resolve_torch_device
-from a_project.engine import ClinicalTriageInferenceEngine, main
-from a_project.loader import LoadedModelBundle, ModelLoader
-from a_project.models import (
+from medsentinel_triage.base import (
+    BaseInferenceModel,
+    InferenceError,
+    InputValidationError,
+    ModelLoadError,
+)
+from medsentinel_triage.config import InferenceConfig, configure_logging, resolve_torch_device
+from medsentinel_triage.engine import (
+    ClinicalTriageInferenceEngine,
+    format_triage_summary,
+    load_batch_patient_payloads,
+    load_patient_payload,
+    main,
+)
+from medsentinel_triage.loader import LoadedModelBundle, ModelLoader
+from medsentinel_triage.models import (
     HuggingFaceClinicalNLP,
     LightGBMReadmissionExplainer,
     ProductionClinicalHybridRAG,
@@ -14,7 +25,7 @@ from a_project.models import (
     VitalSignsBiLSTMAttentionNet,
     tokenize_clinical_text,
 )
-from a_project.workflow import TriageAgentState, build_langgraph_triage_workflow
+from medsentinel_triage.workflow import TriageAgentState, build_langgraph_triage_workflow
 
 __all__ = [
     "BaseInferenceModel",
@@ -35,6 +46,9 @@ __all__ = [
     "VitalSignsBiLSTMAttentionNet",
     "build_langgraph_triage_workflow",
     "configure_logging",
+    "format_triage_summary",
+    "load_batch_patient_payloads",
+    "load_patient_payload",
     "main",
     "resolve_torch_device",
     "tokenize_clinical_text",

@@ -30,7 +30,7 @@ class BaseInferenceModel(ABC, Generic[InputT, PreprocessedT, OutputT]):
     model_name: str = "base_inference_model"
 
     def __init__(self) -> None:
-        self.logger = logging.getLogger(f"a_project.models.{self.model_name}")
+        self.logger = logging.getLogger(f"medsentinel_triage.models.{self.model_name}")
 
     @abstractmethod
     def validate_input(self, raw_input: InputT) -> None:

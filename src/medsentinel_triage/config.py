@@ -15,9 +15,9 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import torch
 
-# Project root and default models directory
+# Project root and default trained_models directory
 PROJECT_ROOT: Path = Path(__file__).resolve().parents[2]
-DEFAULT_MODELS_DIR: Path = Path(os.getenv("HEALTHCARE_MODELS_DIR", PROJECT_ROOT / "models"))
+DEFAULT_MODELS_DIR: Path = Path(os.getenv("HEALTHCARE_MODELS_DIR", PROJECT_ROOT / "trained_models"))
 
 # Exact feature ordering preserved from training pipelines
 TABULAR_FEATURE_NAMES: List[str] = [
@@ -133,23 +133,11 @@ class InferenceConfig:
     rag_bm25_cache_name: str = "rag_bm25_corpus.pkl"
     rag_use_persistent_store: bool = True
     rag_top_k: int = 3
-    rag_dense_candidates: int = 10
-    rag_bm25_candidates: int = 10
-    rag_rrf_candidates: int = 8
-    rag_rrf_k: float = 60.0
 
     # Tabular readmission risk thresholds
     readmission_moderate_threshold: float = 0.25
     readmission_high_threshold: float = 0.40
     shap_top_k: int = 5
-
-    # Composite triage acuity weights & ESI thresholds
-    weight_tabular_risk: float = 0.40
-    weight_vitals_risk: float = 0.35
-    weight_vision_risk: float = 0.25
-    esi_level_1_threshold: float = 0.60
-    esi_level_2_threshold: float = 0.35
-    high_acuity_order_threshold: float = 0.50
 
     tabular_feature_names: List[str] = field(default_factory=lambda: list(TABULAR_FEATURE_NAMES))
 
@@ -192,7 +180,7 @@ class InferenceConfig:
 
 def configure_logging(level: int = logging.INFO) -> logging.Logger:
     """Configures structured package-level logging."""
-    logger = logging.getLogger("a_project")
+    logger = logging.getLogger("medsentinel_triage")
     if not logger.handlers:
         handler = logging.StreamHandler()
         formatter = logging.Formatter(

@@ -11,12 +11,12 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
-from a_project.models.chest_xray import TorchvisionChestXRayGradCAM
-from a_project.models.clinical_nlp import HuggingFaceClinicalNLP
-from a_project.models.phenotyper import SklearnUnsupervisedPhenotyper
-from a_project.rag import ProductionClinicalHybridRAG
-from a_project.models.readmission import LightGBMReadmissionExplainer
-from a_project.models.vitals import PyTorchVitalsTrainer
+from medsentinel_triage.models.chest_xray import TorchvisionChestXRayGradCAM
+from medsentinel_triage.models.clinical_nlp import HuggingFaceClinicalNLP
+from medsentinel_triage.models.phenotyper import SklearnUnsupervisedPhenotyper
+from medsentinel_triage.rag import ProductionClinicalHybridRAG
+from medsentinel_triage.models.readmission import LightGBMReadmissionExplainer
+from medsentinel_triage.models.vitals import PyTorchVitalsTrainer
 
 
 class TriageAgentState(TypedDict):
