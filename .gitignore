@@ -6,3 +6,4 @@ __pycache__/
 clinical_data_cache/
 .DS_Store
 .python-version
+test_data/
