@@ -11,12 +11,13 @@ from langchain_core.tools import tool
 from langgraph.checkpoint.memory import MemorySaver
 from langgraph.graph import END, START, StateGraph
 
+from medsentinel_triage.guardrails import compute_synthesis_and_safety_guardrails
 from medsentinel_triage.models.chest_xray import TorchvisionChestXRayGradCAM
 from medsentinel_triage.models.clinical_nlp import HuggingFaceClinicalNLP
 from medsentinel_triage.models.phenotyper import SklearnUnsupervisedPhenotyper
-from medsentinel_triage.rag import ProductionClinicalHybridRAG
 from medsentinel_triage.models.readmission import LightGBMReadmissionExplainer
 from medsentinel_triage.models.vitals import PyTorchVitalsTrainer
+from medsentinel_triage.rag import ProductionClinicalHybridRAG
 
 
 class TriageAgentState(TypedDict):
@@ -33,84 +34,13 @@ class TriageAgentState(TypedDict):
     chest_xray_gradcam_report: Dict[str, Any]
     clinical_nlp_report: Dict[str, Any]
     hybrid_rag_citations: List[Dict[str, Any]]
+    extracted_rag_evidence: List[Dict[str, Any]]
     composite_acuity_score: float
     esi_triage_level: str
     safety_guardrail_alerts: List[str]
     recommended_clinical_orders: List[str]
     hitl_clinician_status: str
     execution_trace: List[str]
-
-
-def compute_synthesis_and_safety_guardrails(
-    unsupervised_report: Dict[str, Any],
-    tabular_report: Dict[str, Any],
-    vitals_report: Dict[str, Any],
-    xray_report: Dict[str, Any],
-    nlp_report: Dict[str, Any],
-    rag_citations: List[Dict[str, Any]],
-) -> Dict[str, Any]:
-    """Computes composite acuity score, ESI triage level, clinical safety alerts, and orders.
-
-    Preserves the exact formula, thresholds, and rule guardrails from Notebook 06.
-    """
-    p_tab = float(tabular_report["readmission_or_icu_risk_prob"])
-    p_seq = float(vitals_report["deterioration_6h_prob"])
-    p_vis = float(xray_report["pneumonia_probability"])
-    composite = float(0.40 * p_tab + 0.35 * p_seq + 0.25 * p_vis)
-
-    esi = (
-        "ESI Level 1 — Immediate ICU / Resuscitation Triage"
-        if composite >= 0.60
-        else (
-            "ESI Level 2 — High-Risk Inpatient Step-Down"
-            if composite >= 0.35
-            else "ESI Level 4 — Low-Acuity Observation"
-        )
-    )
-
-    alerts: List[str] = []
-    orders: List[str] = []
-    cited_ids = [c["doc_id"] for c in rag_citations]
-
-    if unsupervised_report.get("is_outlier_flagged"):
-        alerts.append(
-            "ISOLATION FOREST OUTLIER: Extreme clinical/sensor profile detected; verify bedside vitals manually."
-        )
-
-    if "Penicillin" in nlp_report.get("documented_allergies", []) and p_vis >= 0.50:
-        alerts.append(
-            "ALLERGY GUARDRAIL: Documented Penicillin allergy — Beta-Lactam/Ceftriaxone orders blocked."
-        )
-        orders.append(
-            f"Administer respiratory fluoroquinolone (Levofloxacin 750mg IV) or Aztreonam + Vancomycin (Grounded in {cited_ids})."
-        )
-    elif p_vis >= 0.50:
-        orders.append(
-            f"Initiate empiric CAP antimicrobial regimen and obtain sputum/blood cultures (Grounded in {cited_ids})."
-        )
-
-    if composite >= 0.50:
-        orders.append(
-            f"Continuous telemetry + hourly SpO2/MAP trend checks; repeat STAT serum lactate (Grounded in {cited_ids})."
-        )
-    else:
-        orders.append(
-            f"Standard observation protocol and 48h outpatient follow-up (Grounded in {cited_ids})."
-        )
-
-    hitl_status = (
-        "PENDING_PHYSICIAN_APPROVAL"
-        if (composite >= 0.35 or alerts)
-        else "AUTO_CLEARED_LOW_RISK"
-    )
-
-    return {
-        "composite_acuity_score": round(composite, 4),
-        "esi_triage_level": esi,
-        "safety_guardrail_alerts": alerts,
-        "recommended_clinical_orders": orders,
-        "hitl_clinician_status": hitl_status,
-    }
 
 
 def build_langgraph_triage_workflow(
@@ -122,7 +52,7 @@ def build_langgraph_triage_workflow(
     rag_model: ProductionClinicalHybridRAG,
     interrupt_before_hitl: bool = True,
 ):
-    """Builds and compiles the stateful LangGraph clinical triage workflow from Notebook 06."""
+    """Builds and compiles the stateful LangGraph clinical triage workflow."""
 
     @tool
     def analyze_patient_phenotype_and_readmission_risk(tabular_row_json: str) -> Dict[str, Any]:

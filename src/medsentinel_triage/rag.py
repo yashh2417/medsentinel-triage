@@ -25,6 +25,26 @@ def tokenize_clinical_text(text: str) -> List[str]:
     return re.findall(r"[a-z0-9]+", text.lower())
 
 
+def _extract_conclusion_and_snippet(raw_text: str, max_snippet_chars: int = 450) -> tuple[str, str]:
+    """Extracts the explicit `Conclusion:` section from the full abstract and formats a readable snippet."""
+    cleaned = " ".join(raw_text.split())
+    if "Conclusion:" in cleaned:
+        abstract_body, conclusion_part = cleaned.split("Conclusion:", 1)
+        conclusion = conclusion_part.strip()
+        if not conclusion:
+            sentences = [s.strip() for s in abstract_body.split(". ") if s.strip()]
+            conclusion = sentences[-1] if sentences else cleaned[:max_snippet_chars]
+    else:
+        sentences = [s.strip() for s in cleaned.split(". ") if s.strip()]
+        conclusion = ". ".join(sentences[-2:]) if len(sentences) >= 2 else cleaned[:max_snippet_chars]
+
+    if len(cleaned) <= max_snippet_chars:
+        snippet = cleaned
+    else:
+        snippet = f"{cleaned[:260].rstrip()} ... Conclusion: {conclusion}"
+    return conclusion, snippet
+
+
 class ProductionClinicalHybridRAG(BaseInferenceModel[str, str, List[Dict[str, Any]]]):
     """Hybrid Clinical RAG using LangChain `EnsembleRetriever` (`Chroma` + `BM25Retriever`) and `CrossEncoder`."""
 
@@ -154,12 +174,14 @@ class ProductionClinicalHybridRAG(BaseInferenceModel[str, str, List[Dict[str, An
             doc = candidate_docs[int(idx)]
             meta = doc.metadata
             raw_text = str(meta.get("text", doc.page_content))
+            conclusion, snippet = _extract_conclusion_and_snippet(raw_text)
             results.append(
                 {
                     "doc_id": str(meta["doc_id"]),
                     "title": str(meta["title"]),
                     "source": str(meta["source"]),
-                    "snippet": raw_text[:450] + "...",
+                    "snippet": snippet,
+                    "conclusion": conclusion,
                     "cross_encoder_score": round(float(ce_scores[int(idx)]), 4),
                 }
             )

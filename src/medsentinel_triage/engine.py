@@ -144,6 +144,7 @@ class ClinicalTriageInferenceEngine:
             "chest_xray_gradcam_report": {},
             "clinical_nlp_report": {},
             "hybrid_rag_citations": [],
+            "extracted_rag_evidence": [],
             "composite_acuity_score": 0.0,
             "esi_triage_level": "",
             "safety_guardrail_alerts": [],
@@ -306,7 +307,7 @@ def load_batch_patient_payloads(batch_path: Union[str, Path]) -> List[Dict[str, 
 
 
 def format_triage_summary(paused_state: TriageAgentState, final_state: Optional[TriageAgentState] = None) -> str:
-    """Formats a human-readable clinical triage report."""
+    """Formats a human-readable clinical triage report including extracted QA evidence."""
     lines = [
         "=" * 88,
         f"[LangGraph HITL Pause] Patient: {paused_state['patient_id']} | Status: {paused_state['hitl_clinician_status']}",
@@ -318,7 +319,8 @@ def format_triage_summary(paused_state: TriageAgentState, final_state: Optional[
         ),
         (
             f"PyTorch Bi-LSTM Vitals: 6h Deterioration={paused_state['vitals_trajectory_report']['deterioration_6h_prob']:.1%} | "
-            f"Peak Hours={paused_state['vitals_trajectory_report']['peak_attention_hours']}"
+            f"Peak Hours={paused_state['vitals_trajectory_report']['peak_attention_hours']} | "
+            f"Projected 6h={paused_state['vitals_trajectory_report']['projected_vitals_6h']}"
         ),
         (
             f"ResNet-18 Grad-CAM    : {paused_state['chest_xray_gradcam_report']['radiology_impression']} "
@@ -326,9 +328,14 @@ def format_triage_summary(paused_state: TriageAgentState, final_state: Optional[
         ),
         (
             f"Biomedical NER        : Findings={paused_state['clinical_nlp_report']['affirmed_clinical_findings'][:5]} | "
+            f"Meds={paused_state['clinical_nlp_report']['extracted_medications']} | "
             f"Allergies={paused_state['clinical_nlp_report']['documented_allergies']}"
         ),
     ]
+    for ev in paused_state.get("extracted_rag_evidence", []):
+        lines.append(
+            f"  [?] QA EVIDENCE [{ev['doc_id']}] (score={ev['cross_encoder_score']}): {ev['title']} -> {ev['extracted_conclusion']}"
+        )
     for alert in paused_state["safety_guardrail_alerts"]:
         lines.append(f"  [!] SAFETY ALERT    : {alert}")
     for order in paused_state["recommended_clinical_orders"]:

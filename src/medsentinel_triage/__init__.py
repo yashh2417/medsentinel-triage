@@ -14,6 +14,11 @@ from medsentinel_triage.engine import (
     load_patient_payload,
     main,
 )
+from medsentinel_triage.guardrails import (
+    ALLERGY_GUARDRAILS,
+    compute_synthesis_and_safety_guardrails,
+    extract_rag_evidence,
+)
 from medsentinel_triage.loader import LoadedModelBundle, ModelLoader
 from medsentinel_triage.models import (
     HuggingFaceClinicalNLP,
@@ -28,6 +33,7 @@ from medsentinel_triage.models import (
 from medsentinel_triage.workflow import TriageAgentState, build_langgraph_triage_workflow
 
 __all__ = [
+    "ALLERGY_GUARDRAILS",
     "BaseInferenceModel",
     "ClinicalTriageInferenceEngine",
     "HuggingFaceClinicalNLP",
@@ -45,7 +51,9 @@ __all__ = [
     "TriageAgentState",
     "VitalSignsBiLSTMAttentionNet",
     "build_langgraph_triage_workflow",
+    "compute_synthesis_and_safety_guardrails",
     "configure_logging",
+    "extract_rag_evidence",
     "format_triage_summary",
     "load_batch_patient_payloads",
     "load_patient_payload",

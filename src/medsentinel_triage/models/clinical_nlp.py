@@ -18,6 +18,19 @@ from medsentinel_triage.config import (
 from medsentinel_triage.preprocessing import validate_non_empty_text
 
 
+def _expand_to_word_boundaries(text: str, start: int, end: int) -> Tuple[int, int, str]:
+    """Expands subword character offsets `[start, end)` to full alphanumeric word boundaries."""
+    n = len(text)
+    s = max(0, min(start, n))
+    e = max(s, min(end, n))
+    while s > 0 and (text[s - 1].isalnum() or text[s - 1] == "-"):
+        s -= 1
+    while e < n and (text[e].isalnum() or text[e] == "-"):
+        e += 1
+    phrase = " ".join(text[s:e].strip(" ,.;:()[]{}").split())
+    return s, e, phrase
+
+
 class HuggingFaceClinicalNLP(BaseInferenceModel[str, str, Dict[str, Any]]):
     """Biomedical Transformer NER (`d4data/biomedical-ner-all`) + NegEx Clinical Scope Analyzer."""
 
@@ -63,30 +76,51 @@ class HuggingFaceClinicalNLP(BaseInferenceModel[str, str, Dict[str, Any]]):
         diagnostic_procedures: List[str] = []
 
         note_lower = cleaned_note.lower()
-        for ent in raw_entities:
-            word = str(ent["word"]).replace("##", "").strip()
-            if len(word) < 3:
-                continue
-            label = str(ent["entity_group"]).upper()
-            start = int(ent.get("start", 0))
-            context_window = note_lower[max(0, start - NEGATION_WINDOW_CHARS) : start]
-            is_negated = any(pat in context_window for pat in self.NEGATION_PATTERNS)
-
-            if label in {"SIGN_SYMPTOM", "DISEASE_DISORDER"}:
-                if is_negated:
-                    negated_problems.append(word)
-                else:
-                    affirmed_problems.append(word)
-            elif label in {"MEDICATION", "THERAPEUTIC_PROCEDURE"}:
-                medications.append(word)
-            elif label in {"DIAGNOSTIC_PROCEDURE", "LAB_VALUE"}:
-                diagnostic_procedures.append(word)
-
         allergies = [
             alg.capitalize()
             for alg in DOCUMENTED_ALLERGY_KEYWORDS
             if alg in note_lower and ("allerg" in note_lower or "anaphylaxis" in note_lower)
         ]
+        allergy_lower_set = {a.lower() for a in allergies}
+
+        seen_spans: set[Tuple[str, int, int]] = set()
+        for ent in raw_entities:
+            label = str(ent.get("entity_group", "")).upper()
+            raw_start = int(ent.get("start", 0))
+            raw_end = int(ent.get("end", raw_start))
+
+            if raw_end > raw_start:
+                start, end, word = _expand_to_word_boundaries(cleaned_note, raw_start, raw_end)
+            else:
+                word = str(ent.get("word", "")).replace("##", "").strip()
+                start, end = raw_start, raw_end
+
+            word_clean = word.lower()
+            if len(word_clean) < 3:
+                continue
+
+            span_key = (label, start, end)
+            if span_key in seen_spans:
+                continue
+            seen_spans.add(span_key)
+
+            context_window = note_lower[max(0, start - NEGATION_WINDOW_CHARS) : start]
+            is_negated = any(pat in context_window for pat in self.NEGATION_PATTERNS)
+
+            if label in {"SIGN_SYMPTOM", "DISEASE_DISORDER"}:
+                if is_negated:
+                    negated_problems.append(word_clean)
+                else:
+                    affirmed_problems.append(word_clean)
+            elif label in {"MEDICATION", "THERAPEUTIC_PROCEDURE"}:
+                # Skip substances that are documented allergies rather than active medications
+                if word_clean in allergy_lower_set and (
+                    "allerg" in context_window or "anaphylaxis" in note_lower[max(0, start - 30) : min(len(note_lower), end + 30)]
+                ):
+                    continue
+                medications.append(word_clean)
+            elif label in {"DIAGNOSTIC_PROCEDURE", "LAB_VALUE"}:
+                diagnostic_procedures.append(word_clean)
 
         return {
             "affirmed_clinical_findings": sorted(list(set(affirmed_problems))),
