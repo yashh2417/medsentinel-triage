@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>MedSentinel Triage — Multimodal Clinical AI Workstation</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Top Clinical Header -->
+  <header class="topbar">
+    <div class="topbar-brand">
+      <div class="brand-logo">MS</div>
+      <div>
+        <h1>MedSentinel Triage</h1>
+        <p class="subtitle">Multimodal Clinical AI Decision-Support &amp; LangGraph HITL Workstation</p>
+      </div>
+    </div>
+    <div class="topbar-actions">
+      <div id="health-badge" class="status-pill status-loading">Checking Backend...</div>
+      <div id="device-badge" class="status-pill status-neutral">Device: --</div>
+      <button id="btn-load-sample" class="btn btn-secondary" type="button" title="Load tabular.csv, vitals_8h.csv, chest_xray.png, and note.txt from test_data/">
+        Load test_data/ Sample
+      </button>
+      <button id="btn-reset" class="btn btn-ghost" type="button">Reset</button>
+    </div>
+  </header>
+
+  <main class="container">
+    <!-- Error / Notification Banner -->
+    <div id="alert-banner" class="alert-banner hidden">
+      <span id="alert-banner-text"></span>
+      <button id="alert-banner-close" type="button" class="alert-close">&times;</button>
+    </div>
+
+    <!-- STEP 1: Multimodal File Uploads & Individual Preprocessing -->
+    <section class="section-card">
+      <div class="section-header">
+        <div>
+          <span class="step-tag">STEP 1</span>
+          <h2>Multimodal Patient File Upload &amp; Preprocessing (<code>input_processor.py</code>)</h2>
+        </div>
+        <div class="patient-meta-inputs">
+          <label for="patient-id-input">Patient ID</label>
+          <input id="patient-id-input" type="text" value="PATIENT-TEST-001" placeholder="e.g. PATIENT-001" />
+          <label for="pad-method-select">Vitals Padding</label>
+          <select id="pad-method-select">
+            <option value="carry_first" selected>Carry Admission Baseline (carry_first)</option>
+            <option value="normal_baseline">Healthy Population Baseline (normal_baseline)</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="modality-grid">
+        <!-- 1. Tabular CSV Upload Card -->
+        <div class="modality-card">
+          <div class="modality-card-header">
+            <div>
+              <h3>1. Inpatient Tabular EHR</h3>
+              <p class="modality-desc">Upload <code>.csv</code>, <code>.tsv</code>, or <code>.json</code> (9 features or raw <code>age</code>)</p>
+            </div>
+            <span id="status-tabular" class="badge badge-idle">Not Loaded</span>
+          </div>
+          <div class="upload-zone">
+            <input id="file-tabular" type="file" accept=".csv,.tsv,.json" />
+            <div class="inline-row">
+              <label for="tabular-row-index">Row Index:</label>
+              <input id="tabular-row-index" type="number" value="0" min="0" class="small-input" />
+              <button id="btn-preprocess-tabular" class="btn btn-sm btn-outline" type="button">Preprocess CSV</button>
+              <button id="btn-predict-tabular" class="btn btn-sm btn-accent" type="button">Run LightGBM + SHAP</button>
+            </div>
+          </div>
+          <div id="preview-tabular" class="modality-preview empty-preview">
+            Upload a tabular CSV file or click "Load test_data/ Sample" to inspect the 9 preprocessed features.
+          </div>
+        </div>
+
+        <!-- 2. Vitals CSV Upload Card -->
+        <div class="modality-card">
+          <div class="modality-card-header">
+            <div>
+              <h3>2. ICU Vitals Stream (8h / 24h)</h3>
+              <p class="modality-desc">Upload <code>.csv</code>, <code>.tsv</code>, or MIMIC-IV <code>chartevents</code></p>
+            </div>
+            <span id="status-vitals" class="badge badge-idle">Not Loaded</span>
+          </div>
+          <div class="upload-zone">
+            <input id="file-vitals" type="file" accept=".csv,.tsv,.json" />
+            <div class="inline-row">
+              <button id="btn-preprocess-vitals" class="btn btn-sm btn-outline" type="button">Preprocess Vitals</button>
+              <button id="btn-predict-vitals" class="btn btn-sm btn-accent" type="button">Run Bi-LSTM Vitals</button>
+            </div>
+          </div>
+          <div id="preview-vitals" class="modality-preview empty-preview">
+            Upload a vitals CSV file to preview the 24h &times; 5 tensor <code>[HR, SpO2, SBP, RR, TempC]</code>.
+          </div>
+        </div>
+
+        <!-- 3. Chest X-Ray PNG/JPG Upload Card -->
+        <div class="modality-card">
+          <div class="modality-card-header">
+            <div>
+              <h3>3. Chest Radiograph (PNG / JPG)</h3>
+              <p class="modality-desc">Converted to <code>28&times;28</code> grayscale &amp; <code>64&times;64</code> ResNet tensor</p>
+            </div>
+            <span id="status-xray" class="badge badge-idle">Not Loaded</span>
+          </div>
+          <div class="upload-zone">
+            <input id="file-xray" type="file" accept=".png,.jpg,.jpeg,.bmp,.tiff,.webp" />
+            <div class="inline-row">
+              <button id="btn-preprocess-xray" class="btn btn-sm btn-outline" type="button">Preprocess Image</button>
+              <button id="btn-predict-xray" class="btn btn-sm btn-accent" type="button">Run ResNet-18 Grad-CAM</button>
+            </div>
+          </div>
+          <div id="preview-xray" class="modality-preview xray-preview-box">
+            <canvas id="canvas-xray-input" width="140" height="140" class="xray-canvas hidden"></canvas>
+            <div id="xray-meta-text" class="empty-preview">
+              Upload a Chest X-Ray <code>.png</code> or <code>.jpg</code> image to preview the 28&times;28 grayscale tensor.
+            </div>
+          </div>
+        </div>
+
+        <!-- 4. Clinical Note TXT Upload Card -->
+        <div class="modality-card">
+          <div class="modality-card-header">
+            <div>
+              <h3>4. Clinical Triage Note (TXT)</h3>
+              <p class="modality-desc">Upload <code>.txt</code> file or edit admission note below</p>
+            </div>
+            <span id="status-note" class="badge badge-idle">Not Loaded</span>
+          </div>
+          <div class="upload-zone">
+            <input id="file-note" type="file" accept=".txt,.md" />
+            <div class="inline-row">
+              <button id="btn-preprocess-note" class="btn btn-sm btn-outline" type="button">Preprocess Note</button>
+              <button id="btn-predict-nlp" class="btn btn-sm btn-accent" type="button">Run BioNER + NegEx</button>
+            </div>
+          </div>
+          <textarea id="textarea-note" rows="4" class="note-textarea" placeholder="Upload a .txt file or type the patient's clinical presentation, active medications, and allergies here..."></textarea>
+        </div>
+      </div>
+
+      <!-- Action Bar for Patient Preparation & Full Triage Execution -->
+      <div class="orchestration-bar">
+        <div class="orchestration-info">
+          <strong>Pipeline Orchestration:</strong>
+          <span id="payload-ready-indicator">Prepare all 4 modalities or upload files directly to run the full LangGraph workflow.</span>
+        </div>
+        <div class="orchestration-buttons">
+          <button id="btn-prepare-payload" class="btn btn-secondary" type="button">
+            1. Prepare Patient JSON (<code>/api/prepare-patient</code>)
+          </button>
+          <button id="btn-view-payload" class="btn btn-ghost hidden" type="button">
+            View / Download Payload JSON
+          </button>
+          <button id="btn-run-triage" class="btn btn-primary" type="button">
+            2. Run Full LangGraph Clinical Triage
+          </button>
+        </div>
+      </div>
+
+      <!-- Collapsible Prepared JSON Drawer -->
+      <div id="payload-json-drawer" class="json-drawer hidden">
+        <div class="json-drawer-header">
+          <strong>Prepared Patient Payload JSON (<code>input_processor.py</code> schema)</strong>
+          <div>
+            <button id="btn-download-payload" class="btn btn-sm btn-outline" type="button">Download patient_input.json</button>
+            <button id="btn-close-drawer" class="btn btn-sm btn-ghost" type="button">Close</button>
+          </div>
+        </div>
+        <pre id="payload-json-pre"></pre>
+      </div>
+    </section>
+
+    <!-- STEP 2: Full LangGraph Triage Synthesis & Attending Physician HITL Sign-Off -->
+    <section id="triage-results-section" class="section-card hidden">
+      <div class="section-header">
+        <div>
+          <span class="step-tag">STEP 2</span>
+          <h2>Clinical Acuity Synthesis, Safety Guardrails &amp; Physician HITL Sign-Off</h2>
+        </div>
+        <div class="inline-row">
+          <span id="latency-badge" class="badge badge-neutral"></span>
+          <span id="thread-badge" class="badge badge-neutral"></span>
+        </div>
+      </div>
+
+      <!-- Acuity Banner -->
+      <div id="esi-banner" class="esi-banner">
+        <div class="esi-main">
+          <div class="esi-label">EMERGENCY SEVERITY INDEX CLASSIFICATION</div>
+          <div id="esi-title" class="esi-title">--</div>
+          <div id="phenotype-subtitle" class="esi-subtitle">--</div>
+        </div>
+        <div class="esi-metrics">
+          <div class="metric-box">
+            <span class="metric-label">Composite Acuity Risk</span>
+            <span id="composite-score-val" class="metric-val">--</span>
+          </div>
+          <div class="metric-box">
+            <span class="metric-label">HITL Workflow Status</span>
+            <span id="hitl-status-badge" class="badge badge-warning">--</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Human-in-the-Loop Physician Sign-Off Panel -->
+      <div id="hitl-panel" class="hitl-panel">
+        <div class="hitl-header">
+          <div>
+            <h3>Attending Physician Human-in-the-Loop (HITL) Checkpoint</h3>
+            <p>LangGraph execution is paused prior to <code>clinician_hitl_signoff</code>. Review the safety guardrail alerts and orders below before releasing orders.</p>
+          </div>
+        </div>
+        <div class="hitl-controls">
+          <input id="hitl-clinician-name" type="text" value="Dr. Attending Physician, MD" placeholder="Attending Physician Name" />
+          <input id="hitl-clinician-notes" type="text" placeholder="Optional clinical sign-off addendum or order modification note..." class="flex-grow" />
+          <button id="btn-approve-hitl" class="btn btn-success" type="button">
+            Approve &amp; Release Orders (<code>/api/triage/approve-hitl</code>)
+          </button>
+          <button id="btn-reject-hitl" class="btn btn-danger" type="button">
+            Hold Orders
+          </button>
+        </div>
+      </div>
+
+      <!-- Guardrail Alerts & Proposed Orders Two-Column Grid -->
+      <div class="guardrails-grid">
+        <div class="guardrail-box alert-box">
+          <h3>[!] Deterministic Safety Guardrail Alerts (<code>guardrails.py</code>)</h3>
+          <ul id="alerts-list" class="clinical-list"></ul>
+        </div>
+        <div class="guardrail-box order-box">
+          <h3>[+] Recommended Clinical Orders</h3>
+          <ul id="orders-list" class="clinical-list"></ul>
+        </div>
+      </div>
+    </section>
+
+    <!-- STEP 3: Individual Model Predictions & Explainability Breakdown -->
+    <section class="section-card">
+      <div class="section-header">
+        <div>
+          <span class="step-tag">STEP 3</span>
+          <h2>Model-by-Model Predictions &amp; Explainability Inspector</h2>
+        </div>
+      </div>
+
+      <div class="models-grid">
+        <!-- Model 1 & 2: Phenotyper + LightGBM & TreeSHAP -->
+        <div class="model-panel">
+          <div class="model-panel-header">
+            <h3>Tabular Phenotyper &amp; LightGBM + TreeSHAP</h3>
+            <span id="tab-risk-badge" class="badge badge-idle">Awaiting Run</span>
+          </div>
+          <div id="tab-model-summary" class="model-summary-text">
+            Run tabular inference or full triage to view patient cohort phenotyping, PCA coordinates, Isolation Forest outlier status, and top-5 TreeSHAP log-odds risk drivers.
+          </div>
+          <div id="shap-bars-container" class="shap-container"></div>
+        </div>
+
+        <!-- Model 3: PyTorch Bi-LSTM + MultiheadAttention Vitals -->
+        <div class="model-panel">
+          <div class="model-panel-header">
+            <h3>24h ICU Vitals Bi-LSTM + Temporal Attention</h3>
+            <span id="vitals-risk-badge" class="badge badge-idle">Awaiting Run</span>
+          </div>
+          <div id="vitals-model-summary" class="model-summary-text">
+            Run vitals inference or full triage to forecast 6-hour ICU deterioration probability, temporal attention peak hours, and 6-hour projected vital signs.
+          </div>
+          <div id="vitals-chart-container" class="vitals-chart-box"></div>
+          <div id="vitals-proj-table"></div>
+        </div>
+
+        <!-- Model 4: Torchvision ResNet-18 + Autograd Grad-CAM -->
+        <div class="model-panel">
+          <div class="model-panel-header">
+            <h3>Chest X-Ray ResNet-18 + Autograd Grad-CAM</h3>
+            <span id="xray-risk-badge" class="badge badge-idle">Awaiting Run</span>
+          </div>
+          <div id="xray-model-summary" class="model-summary-text">
+            Run X-ray inference or full triage to compute pneumonia probability and localize pulmonary consolidation via <code>layer4[-1]</code> Grad-CAM.
+          </div>
+          <div class="gradcam-canvases">
+            <div class="canvas-col">
+              <span class="canvas-caption">Input 28&times;28 X-Ray</span>
+              <canvas id="canvas-xray-raw" width="168" height="168" class="xray-canvas"></canvas>
+            </div>
+            <div class="canvas-col">
+              <span class="canvas-caption">Grad-CAM Overlay &amp; Hotspot</span>
+              <canvas id="canvas-xray-gradcam" width="168" height="168" class="xray-canvas"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Model 5: HuggingFace Biomedical NER + NegEx -->
+        <div class="model-panel">
+          <div class="model-panel-header">
+            <h3>Biomedical NER (<code>d4data/biomedical-ner-all</code>) + NegEx</h3>
+            <span id="nlp-status-badge" class="badge badge-idle">Awaiting Run</span>
+          </div>
+          <div id="nlp-entities-container" class="nlp-container">
+            <p class="model-summary-text">Run BioNER or full triage to extract affirmed clinical findings, negated symptoms (45-char NegEx window), active home medications, and documented allergies.</p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Model 6: LangChain Hybrid RAG + CrossEncoder Reranker -->
+      <div class="rag-panel">
+        <div class="rag-panel-header">
+          <div>
+            <h3>LangChain Hybrid Clinical RAG (<code>EnsembleRetriever</code>: Chroma PubMedBERT + BM25 + CrossEncoder)</h3>
+            <p class="modality-desc">Displays retrieved PubMedQA evidence and extracted study conclusions, or run a custom clinical evidence search below.</p>
+          </div>
+          <div class="rag-search-bar">
+            <input id="rag-custom-query" type="text" placeholder="Search PubMedQA corpus (e.g. pneumonia antibiotic penicillin allergy)..." />
+            <button id="btn-predict-rag" class="btn btn-sm btn-accent" type="button">Search RAG (<code>/api/predict/rag</code>)</button>
+          </div>
+        </div>
+        <div id="rag-results-container" class="rag-cards-grid">
+          <div class="empty-preview">No RAG citations loaded yet. Run full triage or enter a search query above.</div>
+        </div>
+      </div>
+
+      <!-- Execution Trace & Formatted Console Report -->
+      <div class="trace-panel">
+        <h3>LangGraph Execution Trace &amp; Formatted Clinical Triage Report</h3>
+        <pre id="console-summary-pre" class="console-pre">Awaiting triage execution...</pre>
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
