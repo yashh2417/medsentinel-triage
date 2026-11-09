@@ -21,6 +21,8 @@ from medsentinel_triage.guardrails import (
 )
 from medsentinel_triage.input_processor import (
     create_patient_payload_from_files,
+    process_batch_csv_files,
+    process_batch_json_file,
     process_clinical_note,
     process_tabular_file,
     process_vitals_file,
@@ -66,6 +68,8 @@ __all__ = [
     "load_batch_patient_payloads",
     "load_patient_payload",
     "main",
+    "process_batch_csv_files",
+    "process_batch_json_file",
     "process_clinical_note",
     "process_tabular_file",
     "process_vitals_file",

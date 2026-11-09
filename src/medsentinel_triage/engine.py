@@ -14,10 +14,12 @@ import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Union
 
-import pandas as pd
-
 from medsentinel_triage.base import InputValidationError
 from medsentinel_triage.config import InferenceConfig, configure_logging
+from medsentinel_triage.input_processor import (
+    process_batch_csv_files,
+    process_batch_json_file,
+)
 from medsentinel_triage.loader import LoadedModelBundle, ModelLoader
 from medsentinel_triage.preprocessing import (
     TabularInputType,
@@ -205,16 +207,12 @@ class ClinicalTriageInferenceEngine:
 
     def run_batch_triage(
         self,
-        patient_payloads: Union[Sequence[Dict[str, Any]], str, Path],
+        patient_payloads: Sequence[Dict[str, Any]],
         auto_approve_hitl: bool = True,
         output_path: Optional[Union[str, Path]] = None,
     ) -> List[TriageAgentState]:
-        """Runs multimodal clinical triage across a batch of patient records (list or `.json`/`.jsonl`/`.csv` file)."""
-        records = (
-            load_batch_patient_payloads(patient_payloads)
-            if isinstance(patient_payloads, (str, Path))
-            else [validate_patient_payload_dict(p, idx=i) for i, p in enumerate(patient_payloads)]
-        )
+        """Runs multimodal clinical triage across a list of validated patient payload dictionaries."""
+        records = [validate_patient_payload_dict(p, idx=i) for i, p in enumerate(patient_payloads)]
         results: List[TriageAgentState] = []
         for idx, payload in enumerate(records):
             pid = str(payload["patient_id"])
@@ -234,13 +232,8 @@ class ClinicalTriageInferenceEngine:
         if output_path is not None:
             out_file = Path(output_path)
             out_file.parent.mkdir(parents=True, exist_ok=True)
-            if out_file.suffix.lower() == ".jsonl":
-                with out_file.open("w", encoding="utf-8") as f:
-                    for state in results:
-                        f.write(json.dumps(state) + "\n")
-            else:
-                with out_file.open("w", encoding="utf-8") as f:
-                    json.dump(results, f, indent=2)
+            with out_file.open("w", encoding="utf-8") as f:
+                json.dump(results, f, indent=2)
             logger.info("Saved %d batch triage results to %s", len(results), out_file)
 
         return results
@@ -269,41 +262,34 @@ def load_patient_payload(input_json_path: Union[str, Path]) -> Dict[str, Any]:
     return validate_patient_payload_dict(payload)
 
 
-def load_batch_patient_payloads(batch_path: Union[str, Path]) -> List[Dict[str, Any]]:
-    """Loads a batch of patient multimodal payloads from a `.json` (list or single object), `.jsonl`, or `.csv` file.
-
-    For `.csv` files, JSON-encoded columns (`tabular_input`, `vitals_24h`, `xray_28x28`) are parsed automatically.
-    """
-    path = Path(batch_path)
+def load_batch_patient_payloads(
+    manifest_or_json_path: Union[str, Path],
+    vitals_csv_path: Optional[Union[str, Path]] = None,
+    pad_method: str = "carry_first",
+    max_rows: int = 100,
+) -> List[Dict[str, Any]]:
+    """Loads batch patient payloads from either two CSV files (`manifest_csv` + `vitals_csv`) or a `.json` file."""
+    path = Path(manifest_or_json_path)
     if not path.exists():
-        raise InputValidationError(f"Batch patient input file not found at: {path}")
+        raise InputValidationError(f"Batch input file not found at: {path}")
 
     suffix = path.suffix.lower()
-    raw_records: List[Dict[str, Any]] = []
     if suffix == ".json":
-        with path.open("r", encoding="utf-8") as f:
-            data = json.load(f)
-        raw_records = data if isinstance(data, list) else [data]
-    elif suffix == ".jsonl":
-        with path.open("r", encoding="utf-8") as f:
-            raw_records = [json.loads(line) for line in f if line.strip()]
-    elif suffix == ".csv":
-        df = pd.read_csv(path)
-        for _, row in df.iterrows():
-            rec = row.to_dict()
-            for json_col in ("tabular_input", "vitals_24h", "xray_28x28"):
-                if json_col in rec and isinstance(rec[json_col], str):
-                    rec[json_col] = json.loads(rec[json_col])
-            raw_records.append(rec)
-    else:
-        raise InputValidationError(
-            f"Unsupported batch input format '{suffix}'. Expected .json, .jsonl, or .csv."
+        return process_batch_json_file(path, pad_method=pad_method, max_rows=max_rows)
+    if suffix == ".csv":
+        if vitals_csv_path is None:
+            raise InputValidationError(
+                "Batch CSV processing requires both 'batch_tabular_manifest.csv' and 'batch_vitals.csv'."
+            )
+        return process_batch_csv_files(
+            manifest_csv_path=path,
+            vitals_csv_path=vitals_csv_path,
+            pad_method=pad_method,
+            max_rows=max_rows,
         )
-
-    if not raw_records:
-        raise InputValidationError(f"Batch patient input file {path} contains no records.")
-
-    return [validate_patient_payload_dict(rec, idx=i) for i, rec in enumerate(raw_records)]
+    raise InputValidationError(
+        f"Unsupported batch input format '{suffix}'. Only two CSV files (.csv) or a JSON file (.json) are supported."
+    )
 
 
 def format_triage_summary(paused_state: TriageAgentState, final_state: Optional[TriageAgentState] = None) -> str:
@@ -350,28 +336,41 @@ def main(argv: Optional[List[str]] = None) -> None:
     parser = argparse.ArgumentParser(
         description="Run the MedSentinel Multimodal Clinical Triage Inference Engine."
     )
-    input_group = parser.add_mutually_exclusive_group(required=True)
-    input_group.add_argument(
+    parser.add_argument(
         "--input-json",
         type=str,
+        default=None,
         help="Path to a single patient multimodal input JSON file.",
     )
-    input_group.add_argument(
-        "--batch-input",
+    parser.add_argument(
+        "--batch-manifest-csv",
         type=str,
-        help="Path to a batch file (.json, .jsonl, or .csv) containing multiple patient payloads.",
+        default=None,
+        help="Path to batch_tabular_manifest.csv (requires --batch-vitals-csv).",
+    )
+    parser.add_argument(
+        "--batch-vitals-csv",
+        type=str,
+        default=None,
+        help="Path to batch_vitals.csv (used with --batch-manifest-csv).",
+    )
+    parser.add_argument(
+        "--batch-json",
+        type=str,
+        default=None,
+        help="Path to a batch patient JSON file (.json).",
     )
     parser.add_argument(
         "--output-file",
         type=str,
         default=None,
-        help="Optional path to save output predictions (.json or .jsonl).",
+        help="Optional path to save output predictions (.json).",
     )
     parser.add_argument(
         "--rag-corpus-file",
         type=str,
         default=None,
-        help="Optional path to custom RAG corpus file (.json, .jsonl, or .csv) when building/reindexing the vector store.",
+        help="Optional path to custom RAG corpus file when building/reindexing the vector store.",
     )
     parser.add_argument(
         "--models-dir",
@@ -412,9 +411,16 @@ def main(argv: Optional[List[str]] = None) -> None:
         force_reindex_rag=args.reindex_rag,
     )
 
-    if args.batch_input:
+    if args.batch_manifest_csv or args.batch_json:
+        if args.batch_manifest_csv:
+            if not args.batch_vitals_csv:
+                raise InputValidationError("--batch-vitals-csv is required when using --batch-manifest-csv.")
+            payloads = load_batch_patient_payloads(args.batch_manifest_csv, args.batch_vitals_csv)
+        else:
+            payloads = load_batch_patient_payloads(args.batch_json)
+
         batch_states = engine.run_batch_triage(
-            patient_payloads=args.batch_input,
+            patient_payloads=payloads,
             auto_approve_hitl=True,
             output_path=args.output_file,
         )
@@ -423,7 +429,7 @@ def main(argv: Optional[List[str]] = None) -> None:
         else:
             for state in batch_states:
                 print(format_triage_summary(state, state))
-    else:
+    elif args.input_json:
         patient_payload = load_patient_payload(args.input_json)
         thread_id = f"clinical-triage-{patient_payload['patient_id']}"
         paused_state = engine.run_triage_until_hitl(
@@ -446,6 +452,10 @@ def main(argv: Optional[List[str]] = None) -> None:
             print(json.dumps(final_state, indent=2))
         else:
             print(format_triage_summary(paused_state, final_state))
+    else:
+        raise InputValidationError(
+            "Provide either --input-json, (--batch-manifest-csv and --batch-vitals-csv), or --batch-json."
+        )
 
 
 if __name__ == "__main__":

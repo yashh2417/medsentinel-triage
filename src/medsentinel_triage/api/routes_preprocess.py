@@ -15,6 +15,8 @@ from medsentinel_triage.input_processor import (
     TABULAR_FEATURE_NAMES,
     VITAL_COLUMNS,
     create_patient_payload_from_files,
+    process_batch_csv_files,
+    process_batch_json_file,
     process_clinical_note,
     process_tabular_file,
     process_vitals_file,
@@ -22,6 +24,9 @@ from medsentinel_triage.input_processor import (
 )
 
 router = APIRouter(prefix="/api", tags=["File Upload & Preprocessing"])
+
+DEFAULT_BATCH_MANIFEST_CSV = PROJECT_ROOT / "test_data" / "batch_input_data" / "batch_tabular_manifest.csv"
+DEFAULT_BATCH_VITALS_CSV = PROJECT_ROOT / "test_data" / "batch_input_data" / "batch_vitals.csv"
 
 
 def _save_temp_upload(upload: UploadFile) -> Path:
@@ -43,7 +48,7 @@ def preprocess_tabular_endpoint(
     file: UploadFile = File(...),
     row_index: int = Form(0),
 ) -> Dict[str, Any]:
-    """Uploads and preprocesses a tabular `.csv`, `.tsv`, or `.json` file."""
+    """Uploads and preprocesses a tabular `.csv` or `.json` file."""
     tmp_path = _save_temp_upload(file)
     try:
         tabular_data = process_tabular_file(tmp_path, row_index=row_index)
@@ -64,7 +69,7 @@ def preprocess_vitals_endpoint(
     file: UploadFile = File(...),
     pad_method: str = Form("carry_first"),
 ) -> Dict[str, Any]:
-    """Uploads and preprocesses an 8h/24h vitals `.csv`, `.tsv`, or `.json` file into a 24x5 tensor."""
+    """Uploads and preprocesses an 8h/24h vitals `.csv` or `.json` file into a 24x5 tensor."""
     tmp_path = _save_temp_upload(file)
     try:
         vitals_24h = process_vitals_file(tmp_path, target_hours=24, pad_method=pad_method)
@@ -189,9 +194,61 @@ def prepare_patient_endpoint(
                 p.unlink(missing_ok=True)
 
 
+@router.post("/preprocess/batch")
+def preprocess_batch_endpoint(
+    manifest_csv_file: Optional[UploadFile] = File(None),
+    vitals_csv_file: Optional[UploadFile] = File(None),
+    batch_json_file: Optional[UploadFile] = File(None),
+    pad_method: str = Form("carry_first"),
+    max_rows: int = Form(50),
+) -> Dict[str, Any]:
+    """Validates and preprocesses a batch cohort from either two CSV files (`manifest_csv_file` + `vitals_csv_file`) or a `.json` file."""
+    manifest_tmp: Optional[Path] = None
+    vitals_tmp: Optional[Path] = None
+    json_tmp: Optional[Path] = None
+
+    try:
+        if batch_json_file is not None and batch_json_file.filename:
+            json_tmp = _save_temp_upload(batch_json_file)
+            patients = process_batch_json_file(
+                batch_json_path=json_tmp,
+                pad_method=pad_method,
+                max_rows=max_rows,
+            )
+        elif manifest_csv_file is not None and manifest_csv_file.filename:
+            if vitals_csv_file is None or not vitals_csv_file.filename:
+                raise InputValidationError(
+                    "Both 'batch_tabular_manifest.csv' and 'batch_vitals.csv' must be provided for CSV batch processing."
+                )
+            manifest_tmp = _save_temp_upload(manifest_csv_file)
+            vitals_tmp = _save_temp_upload(vitals_csv_file)
+            patients = process_batch_csv_files(
+                manifest_csv_path=manifest_tmp,
+                vitals_csv_path=vitals_tmp,
+                pad_method=pad_method,
+                max_rows=max_rows,
+            )
+        else:
+            raise InputValidationError(
+                "Upload either the two CSV files (Tabular Manifest CSV + Batch Vitals CSV) or a Batch JSON file (.json)."
+            )
+
+        return {
+            "status": "ok",
+            "patient_count": len(patients),
+            "patients": patients,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    finally:
+        for p in (manifest_tmp, vitals_tmp, json_tmp):
+            if p is not None:
+                p.unlink(missing_ok=True)
+
+
 @router.get("/sample-files/load")
 def load_sample_files_endpoint() -> Dict[str, Any]:
-    """Loads and preprocesses sample patient files from `test_data/`."""
+    """Loads and preprocesses sample single-patient files from `test_data/`."""
     test_dir = PROJECT_ROOT / "test_data"
     try:
         payload = create_patient_payload_from_files(
@@ -204,13 +261,29 @@ def load_sample_files_endpoint() -> Dict[str, Any]:
         )
         return {
             "status": "ok",
-            "uploaded_filenames": {
-                "tabular_file": "tabular.csv",
-                "vitals_file": "vitals_8h.csv",
-                "xray_file": "chest_xray.png",
-                "note_file": "note.txt",
-            },
             "payload": payload,
+        }
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/sample-files/load-batch")
+def load_sample_batch_endpoint(
+    pad_method: str = "carry_first",
+    max_rows: int = 50,
+) -> Dict[str, Any]:
+    """Validates and loads the 10-patient batch from `test_data/batch_input_data/batch_tabular_manifest.csv` and `batch_vitals.csv`."""
+    try:
+        patients = process_batch_csv_files(
+            manifest_csv_path=DEFAULT_BATCH_MANIFEST_CSV,
+            vitals_csv_path=DEFAULT_BATCH_VITALS_CSV,
+            pad_method=pad_method,
+            max_rows=max_rows,
+        )
+        return {
+            "status": "ok",
+            "patient_count": len(patients),
+            "patients": patients,
         }
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc

@@ -95,6 +95,20 @@ class TriageRunRequest(BaseModel):
     )
 
 
+class BatchTriageRunRequest(BaseModel):
+    """Request schema for executing batch multimodal clinical triage across multiple patients."""
+
+    patients: List[TriageRunRequest] = Field(
+        ...,
+        min_length=1,
+        description="List of validated patient multimodal payloads to process in batch.",
+    )
+    auto_approve_hitl: bool = Field(
+        default=False,
+        description="If True, automatically completes HITL sign-off for each patient in the batch.",
+    )
+
+
 class HITLApprovalRequest(BaseModel):
     """Request schema for Attending Physician Human-in-the-Loop sign-off."""
 

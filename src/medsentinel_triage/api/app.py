@@ -17,13 +17,14 @@ from medsentinel_triage.config import configure_logging
 configure_logging()
 
 FRONTEND_DIR: Path = Path(__file__).resolve().parent.parent / "frontend"
+NO_CACHE_HEADERS = {"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"}
 
 app = FastAPI(
     title="MedSentinel Clinical Triage AI API",
     version="1.0.0",
     description=(
-        "Modular FastAPI backend for multimodal clinical file preprocessing (`input_processor.py`), "
-        "individual model inference, and stateful `LangGraph` HITL triage orchestration."
+        "Modular FastAPI backend for multimodal clinical file preprocessing, "
+        "individual model inference, and stateful LangGraph HITL triage orchestration."
     ),
 )
 
@@ -57,17 +58,17 @@ app.include_router(inference_router)
 
 @app.get("/", include_in_schema=False)
 def serve_index() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "index.html")
+    return FileResponse(FRONTEND_DIR / "index.html", headers=NO_CACHE_HEADERS)
 
 
 @app.get("/styles.css", include_in_schema=False)
 def serve_css() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "styles.css", media_type="text/css")
+    return FileResponse(FRONTEND_DIR / "styles.css", media_type="text/css", headers=NO_CACHE_HEADERS)
 
 
 @app.get("/app.js", include_in_schema=False)
 def serve_js() -> FileResponse:
-    return FileResponse(FRONTEND_DIR / "app.js", media_type="application/javascript")
+    return FileResponse(FRONTEND_DIR / "app.js", media_type="application/javascript", headers=NO_CACHE_HEADERS)
 
 
 if FRONTEND_DIR.exists():
